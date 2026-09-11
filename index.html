@@ -1,0 +1,722 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Vue + D3 + Firebase Dashboard</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Vue 3 -->
+  <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+  <!-- D3.js -->
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <!-- Firebase v9 (ESM) - loaded as module below -->
+  <script type="module">
+    // Firebase imports (won't break if not configured)
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-app.js";
+    import { getDatabase, ref as dbRef, onValue, set, push, serverTimestamp } from "https://www.gstatic.com/firebasejs/9.23.0/firebase-database.js";
+    window.firebaseInit = { initializeApp, getDatabase, dbRef, onValue, set, push, serverTimestamp };
+  </script>
+
+  <style>
+    :root {
+      --bg: #0b1121;
+      --card: #151e32;
+      --card-hover: #1a2540;
+      --border: #23304d;
+      --text: #e2e8f0;
+      --muted: #94a3b8;
+      --accent: #6366f1;
+      --accent-glow: rgba(99,102,241,0.25);
+      --success: #10b981;
+      --danger: #ef4444;
+      --warning: #f59e0b;
+    }
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      min-height: 100vh;
+    }
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: var(--bg); }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+    .dashboard { padding: 24px; max-width: 1400px; margin: 0 auto; }
+
+    /* Header */
+    .header {
+      display:flex; justify-content:space-between; align-items:center;
+      margin-bottom: 28px; flex-wrap:wrap; gap:16px;
+    }
+    .header h1 {
+      font-size: 28px; font-weight: 800; letter-spacing: -0.5px;
+      background: linear-gradient(90deg, #818cf8, #c084fc);
+      -webkit-background-clip: text;background-clip: text; -webkit-text-fill-color: transparent;
+    }
+    .badge {
+      display:inline-flex; align-items:center; gap:8px;
+      padding: 6px 14px; border-radius: 999px; font-size: 13px; font-weight: 600;
+      background: var(--card); border: 1px solid var(--border);
+    }
+    .badge .dot {
+      width: 8px; height: 8px; border-radius: 50%; background: var(--muted);
+      transition: all 0.3s;
+    }
+    .badge.online .dot { background: var(--success); box-shadow: 0 0 10px var(--success); }
+    .badge.offline .dot { background: var(--danger); }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+    .badge.online .dot { animation: pulse 2s infinite; }
+
+    /* Buttons */
+    .btn {
+      padding: 10px 18px; border-radius: 10px; font-size: 14px; font-weight: 600;
+      border: 1px solid transparent; cursor: pointer; transition: all 0.2s;
+      display:inline-flex; align-items:center; gap:8px;
+    }
+    .btn-primary { background: var(--accent); color: white; }
+    .btn-primary:hover { background: #4f46e5; transform: translateY(-1px); box-shadow: 0 4px 20px var(--accent-glow); }
+    .btn-ghost { background: var(--card); color: var(--text); border-color: var(--border); }
+    .btn-ghost:hover { background: var(--card-hover); border-color: #334155; }
+    .btn-danger { background: rgba(239,68,68,0.15); color: var(--danger); border-color: rgba(239,68,68,0.3); }
+    .btn-danger:hover { background: rgba(239,68,68,0.25); }
+
+    /* Metrics */
+    .metrics {
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px;
+      margin-bottom: 24px;
+    }
+    .metric {
+      background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+      padding: 20px; transition: all 0.25s; position: relative; overflow: hidden;
+    }
+    .metric::before {
+      content: ''; position: absolute; top:0; left:0; right:0; height: 3px;
+      background: linear-gradient(90deg, var(--accent), #8b5cf6); opacity: 0;
+      transition: opacity 0.3s;
+    }
+    .metric:hover { transform: translateY(-3px); border-color: #334155; }
+    .metric:hover::before { opacity: 1; }
+    .metric-value { font-size: 30px; font-weight: 800; margin-bottom: 4px; }
+    .metric-label { font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; }
+    .metric-delta { font-size: 14px; font-weight: 700; margin-top: 10px; display:flex; align-items:center; gap:4px; }
+    .metric-delta.up { color: var(--success); }
+    .metric-delta.down { color: var(--danger); }
+
+    /* Charts Grid */
+    .grid {
+      display: grid; grid-template-columns: repeat(12, 1fr); gap: 20px;
+    }
+    .col-8 { grid-column: span 8; }
+    .col-6 { grid-column: span 6; }
+    .col-4 { grid-column: span 4; }
+    .col-12 { grid-column: span 12; }
+    @media (max-width: 1024px) {
+      .col-8, .col-6, .col-4 { grid-column: span 12; }
+    }
+
+    .card {
+      background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+      padding: 20px; min-height: 360px; display:flex; flex-direction:column;
+      transition: border-color 0.3s;
+    }
+    .card:hover { border-color: #334155; }
+    .card-header {
+      display:flex; justify-content:space-between; align-items:center; margin-bottom: 16px;
+    }
+    .card-title { font-size: 16px; font-weight: 700; color: var(--text); }
+    .chart-wrap { flex:1; position: relative; min-height: 260px; }
+
+    /* Tooltip */
+    .d3-tooltip {
+      position: absolute; pointer-events: none;
+      background: rgba(15, 23, 42, 0.95); border: 1px solid #334155;
+      padding: 10px 14px; border-radius: 10px; font-size: 13px; color: #f8fafc;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.5); opacity: 0; transition: opacity 0.15s;
+      z-index: 50; backdrop-filter: blur(4px);
+    }
+
+    /* Activity Stream */
+    .stream { max-height: 300px; overflow-y: auto; padding-right: 4px; }
+    .stream-item {
+      display:flex; align-items:center; gap: 14px; padding: 12px 0;
+      border-bottom: 1px solid var(--border); font-size: 14px;
+      animation: slideIn 0.4s ease both;
+    }
+    .stream-item:last-child { border-bottom: none; }
+    @keyframes slideIn { from { opacity:0; transform: translateX(-10px); } to { opacity:1; transform: translateX(0); } }
+    .stream-time { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; min-width: 64px; }
+    .stream-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+    .stream-dot.order { background: #818cf8; box-shadow: 0 0 8px #818cf8; }
+    .stream-dot.user { background: #34d399; box-shadow: 0 0 8px #34d399; }
+    .stream-dot.payment { background: #fbbf24; box-shadow: 0 0 8px #fbbf24; }
+    .stream-dot.alert { background: #f87171; box-shadow: 0 0 8px #f87171; }
+    .stream-text { color: #cbd5e1; }
+
+    /* Legend */
+    .legend { display:flex; flex-wrap:wrap; gap: 14px; margin-top: 12px; }
+    .legend-item { display:flex; align-items:center; gap: 6px; font-size: 12px; color: var(--muted); }
+    .legend-color { width: 10px; height: 10px; border-radius: 3px; }
+
+    /* Config Panel */
+    .config-panel {
+      background: var(--card); border: 1px solid var(--border); border-radius: 16px;
+      padding: 20px; margin-bottom: 24px;
+    }
+    .config-panel h3 { font-size: 14px; font-weight: 700; margin-bottom: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.5px; }
+    .input-group { display:flex; gap: 12px; flex-wrap:wrap; align-items:center; }
+    .input-group input {
+      background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+      padding: 8px 14px; color: var(--text); font-size: 13px; min-width: 240px;
+      outline: none; transition: border-color 0.2s;
+    }
+    .input-group input:focus { border-color: var(--accent); }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 10px; }
+    .hint code { background: var(--bg); padding: 2px 6px; border-radius: 4px; font-family: monospace; color: #c084fc; }
+
+    /* Empty state for charts */
+    .empty-state {
+      display:flex; align-items:center; justify-content:center; height: 100%;
+      color: var(--muted); font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div id="app" class="dashboard">
+    <!-- Header -->
+    <div class="header">
+      <h1>📊 Analytics Dashboard</h1>
+      <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
+        <div class="badge" :class="isOnline ? 'online' : 'offline'">
+          <span class="dot"></span>
+          {{ isOnline ? 'Firebase Live' : 'Offline Mode' }}
+        </div>
+        <button class="btn btn-primary" @click="addDataPoint">+ Add Data Point</button>
+        <button class="btn btn-ghost" @click="randomizeData">🎲 Randomize</button>
+        <button class="btn btn-danger" @click="clearData">Clear All</button>
+      </div>
+    </div>
+
+    <!-- Firebase Config Panel -->
+    <div class="config-panel">
+      <h3>🔧 Firebase Configuration</h3>
+      <div class="input-group">
+        <input v-model="firebaseConfig.apiKey" placeholder="Firebase API Key" />
+        <input v-model="firebaseConfig.databaseURL" placeholder="Database URL" />
+        <button class="btn btn-primary" @click="connectFirebase" :disabled="firebaseConnected">
+          {{ firebaseConnected ? 'Connected' : 'Connect Firebase' }}
+        </button>
+      </div>
+      <p class="hint">
+        To use real Firebase: paste your config above and click Connect. Otherwise the dashboard runs in local mock mode.
+        Get config from <code>Project Settings > General</code> in Firebase Console.
+      </p>
+    </div>
+
+    <!-- Metrics -->
+    <div class="metrics">
+      <div class="metric" v-for="m in metrics" :key="m.label">
+        <div class="metric-value">{{ m.value }}</div>
+        <div class="metric-label">{{ m.label }}</div>
+        <div class="metric-delta" :class="m.trend">
+          <span v-if="m.trend === 'up'">▲</span>
+          <span v-else>▼</span>
+          {{ m.change }}
+        </div>
+      </div>
+    </div>
+
+    <!-- Charts -->
+    <div class="grid">
+      <!-- Line Chart -->
+      <div class="card col-8">
+        <div class="card-header">
+          <span class="card-title">Revenue Trend</span>
+          <span style="font-size:12px;color:var(--muted);">Last 12 months</span>
+        </div>
+        <div ref="lineChart" class="chart-wrap"></div>
+      </div>
+
+      <!-- Pie Chart -->
+      <div class="card col-4">
+        <div class="card-header">
+          <span class="card-title">Category Share</span>
+        </div>
+        <div ref="pieChart" class="chart-wrap"></div>
+        <div class="legend">
+          <div class="legend-item" v-for="c in categoryData" :key="c.name">
+            <div class="legend-color" :style="{background: colorScale(c.name)}"></div>
+            {{ c.name }} {{ c.value }}%
+          </div>
+        </div>
+      </div>
+
+      <!-- Bar Chart -->
+      <div class="card col-6">
+        <div class="card-header">
+          <span class="card-title">Sales by Category</span>
+        </div>
+        <div ref="barChart" class="chart-wrap"></div>
+      </div>
+
+      <!-- Activity Stream -->
+      <div class="card col-6">
+        <div class="card-header">
+          <span class="card-title">Real-time Activity</span>
+          <span style="font-size:12px;color:var(--muted);">{{ activities.length }} events</span>
+        </div>
+        <div class="stream">
+          <div class="stream-item" v-for="(item, i) in activities" :key="i">
+            <div class="stream-dot" :class="item.type"></div>
+          <div class="stream-time">{{ item.time }}</div>
+            <div class="stream-text">{{ item.text }}</div>
+          </div>
+          <div v-if="activities.length === 0" class="empty-state">No activity yet</div>
+        </div>
+      </div>
+
+      <!-- Area Chart -->
+      <div class="card col-12">
+        <div class="card-header">
+          <span class="card-title">Growth Trajectory (Stacked Area)</span>
+        </div>
+        <div ref="areaChart" class="chart-wrap"></div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module">
+    const { createApp, ref, onMounted, watch, nextTick, computed } = Vue;
+
+    // ========================
+    // CONFIGURATION
+    // ========================
+    const USE_LOCAL_FALLBACK = true; // Set false when Firebase is connected
+
+    createApp({
+      setup() {
+        const lineChart = ref(null);
+        const barChart = ref(null);
+        const pieChart = ref(null);
+        const areaChart = ref(null);
+        const isOnline = ref(false);
+        const firebaseConnected = ref(false);
+        let db = null;
+        let revenueRef = null;
+        let activityRef = null;
+
+        // Firebase config inputs
+        const firebaseConfig = ref({
+          apiKey: '',
+          authDomain: '',
+          databaseURL: '',
+          projectId: '',
+          storageBucket: '',
+          messagingSenderId: '',
+          appId: ''
+        });
+
+        // ========================
+        // DATA STORES
+        // ========================
+        const revenueData = ref([
+          { month: 'Jan', value: 4200, target: 4000 },
+          { month: 'Feb', value: 5100, target: 4500 },
+          { month: 'Mar', value: 4800, target: 4800 },
+          { month: 'Apr', value: 6200, target: 5200 },
+          { month: 'May', value: 7100, target: 5800 },
+          { month: 'Jun', value: 6900, target: 6500 },
+          { month: 'Jul', value: 8400, target: 7200 },
+          { month: 'Aug', value: 9100, target: 8000 },
+        ]);
+
+        const categoryData = ref([
+          { name: 'Electronics', value: 35 },
+          { name: 'Clothing', value: 25 },
+          { name: 'Food', value: 20 },
+          { name: 'Books', value: 12 },
+          { name: 'Other', value: 8 }
+        ]);
+
+        const activities = ref([
+          { time: '10:42 AM', text: 'New order #8291 — $124.00', type: 'order' },
+          { time: '10:38 AM', text: 'User signup: sarah@email.com', type: 'user' },
+          { time: '10:35 AM', text: 'Payment processed #8290', type: 'payment' },
+          { time: '10:30 AM', text: 'New order #8289 — $67.50', type: 'order' },
+          { time: '10:25 AM', text: 'Inventory alert: Widget-X low', type: 'alert' },
+        ]);
+
+        const colorScale = (name) => {
+          const map = {
+            'Electronics': '#6366f1',
+            'Clothing': '#8b5cf6',
+            'Food': '#ec4899',
+            'Books': '#f59e0b',
+            'Other': '#10b981'
+          };
+          return map[name] || '#94a3b8';
+        };
+
+        // ========================
+        // COMPUTED METRICS
+        // ========================
+        const metrics = computed(() => {
+          const total = revenueData.value.reduce((s, d) => s + d.value, 0);
+          const avg = Math.round(total / (revenueData.value.length || 1));
+          const last = revenueData.value[revenueData.value.length - 1]?.value || 0;
+          const prev = revenueData.value[revenueData.value.length - 2]?.value || last;
+          const growth = prev ? ((last - prev) / prev * 100).toFixed(1) : '0.0';
+          const target = revenueData.value.reduce((s, d) => s + (d.target || 0), 0);
+          const attainment = target ? Math.round((total / target) * 100) : 0;
+
+          return [
+            { label: 'Total Revenue', value: '$' + total.toLocaleString(), change: (growth > 0 ? '+' : '') + growth + '%', trend: growth >= 0 ? 'up' : 'down' },
+            { label: 'Avg Monthly', value: '$' + avg.toLocaleString(), change: '+12.3%', trend: 'up' },
+            { label: 'Target Attainment', value: attainment + '%', change: attainment >= 100 ? 'On track' : 'Behind', trend: attainment >= 100 ? 'up' : 'down' },
+            { label: 'Active Users', value: '2,847', change: '+5.2%', trend: 'up' }
+          ];
+        });
+
+        // ========================
+        // FIREBASE CONNECTION
+        // ========================
+        async function connectFirebase() {
+          if (!window.firebaseInit) {
+            alert('Firebase SDK not loaded yet. Please wait a moment and try again.');
+            return;
+          }
+          const cfg = firebaseConfig.value;
+          if (!cfg.apiKey || !cfg.databaseURL) {
+            alert('Please enter at least API Key and Database URL');
+            return;
+          }
+          try {
+            const { initializeApp, getDatabase, dbRef, onValue } = window.firebaseInit;
+            const app = initializeApp(cfg);
+            db = getDatabase(app);
+            revenueRef = dbRef(db, 'dashboard/revenue');
+            activityRef = dbRef(db, 'dashboard/activities');
+
+            // Listen for revenue data
+            onValue(revenueRef, (snapshot) => {
+              const data = snapshot.val();
+              if (data && Array.isArray(data)) {
+                revenueData.value = data;
+                drawAllCharts();
+              }
+            });
+
+            // Listen for activity data
+            onValue(activityRef, (snapshot) => {
+              const data = snapshot.val();
+              if (data && Array.isArray(data)) {
+                activities.value = data;
+              }
+            });
+
+            firebaseConnected.value = true;
+            isOnline.value = true;
+            addActivity('system', 'Connected to Firebase successfully');
+          } catch (err) {
+            console.error(err);
+            alert('Failed to connect: ' + err.message);
+          }
+        }
+
+        async function syncToFirebase() {
+          if (firebaseConnected.value && db && window.firebaseInit) {
+            const { set, dbRef } = window.firebaseInit;
+            try {
+              await set(dbRef(db, 'dashboard/revenue'), revenueData.value);
+              await set(dbRef(db, 'dashboard/activities'), activities.value.slice(0, 20));
+            } catch (e) { console.error('Sync error', e); }
+          }
+        }
+
+        // ========================
+        // ACTIVITY HELPERS
+        // ========================
+        function addActivity(type, text) {
+          const now = new Date();
+          const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          activities.value.unshift({ time, text, type });
+          if (activities.value.length > 20) activities.value.pop();
+          syncToFirebase();
+        }
+
+        // ========================
+        // D3 CHARTS
+        // ========================
+        function getDims(el) {
+          const w = el.clientWidth;
+          const h = el.clientHeight || 280;
+          return { w, h, m: { t: 20, r: 30, b: 40, l: 50 } };
+        }
+
+        function drawLineChart() {
+          const el = lineChart.value;
+          if (!el) return;
+          el.innerHTML = '';
+          const { w, h, m } = getDims(el);
+          const width = w - m.l - m.r;
+          const height = h - m.t - m.b;
+
+          const svg = d3.select(el).append('svg').attr('width', w).attr('height', h);
+          const g = svg.append('g').attr('transform', `translate(${m.l},${m.t})`);
+
+          const x = d3.scalePoint().domain(revenueData.value.map(d => d.month)).range([0, width]).padding(0.4);
+          const y = d3.scaleLinear().domain([0, d3.max(revenueData.value, d => d.value) * 1.15]).range([height, 0]);
+          // Gradient area
+          const defs = svg.append('defs');
+          const grad = defs.append('linearGradient').attr('id', 'areaGrad').attr('x1', 0).attr('y1', 0).attr('x2', 0).attr('y2', 1);
+          grad.append('stop').attr('offset', '0%').attr('stop-color', '#6366f1').attr('stop-opacity', 0.35);
+          grad.append('stop').attr('offset', '100%').attr('stop-color', '#6366f1').attr('stop-opacity', 0);
+
+          // Target line
+          const targetLine = d3.line().x(d => x(d.month)).y(d => y(d.target || 0)).curve(d3.curveMonotoneX);
+          g.append('path').datum(revenueData.value).attr('fill', 'none').attr('stroke', '#334155').attr('stroke-dasharray', '6,4').attr('stroke-width', 2).attr('d', targetLine);
+
+          // Area
+          const area = d3.area().x(d => x(d.month)).y0(height).y1(d => y(d.value)).curve(d3.curveMonotoneX);
+          g.append('path').datum(revenueData.value).attr('fill', 'url(#areaGrad)').attr('d', area);
+
+          // Line
+          const line = d3.line().x(d => x(d.month)).y(d => y(d.value)).curve(d3.curveMonotoneX);
+          const path = g.append('path').datum(revenueData.value).attr('fill', 'none').attr('stroke', '#818cf8').attr('stroke-width', 3).attr('d', line);
+
+          // Animate line draw
+          const len = path.node().getTotalLength();
+          path.attr('stroke-dasharray', `${len} ${len}`).attr('stroke-dashoffset', len)
+            .transition().duration(1000).ease(d3.easeCubicOut).attr('stroke-dashoffset', 0);
+
+          // Axes
+          g.append('g').attr('transform', `translate(0,${height})`).call(d3.axisBottom(x).tickSize(0).tickPadding(10))
+            .selectAll('text').attr('fill', '#64748b').style('font-size', '12px');
+          g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d => '$' + (d/1000).toFixed(1) + 'k').tickSize(-width))
+            .selectAll('text').attr('fill', '#64748b').style('font-size', '12px');
+          g.selectAll('.domain').attr('stroke', '#23304d');
+          g.selectAll('.tick line').attr('stroke', '#1e293b');
+
+          // Tooltip
+          const tooltip = d3.select(el).append('div').attr('class', 'd3-tooltip');
+
+          // Dots
+          g.selectAll('.dot').data(revenueData.value).enter().append('circle')
+            .attr('cx', d => x(d.month)).attr('cy', d => y(d.value))
+            .attr('r', 0).attr('fill', '#818cf8').attr('stroke', '#0b1121').attr('stroke-width', 3)
+            .on('mouseover', function(e, d) {
+              d3.select(this).transition().attr('r', 8).attr('stroke', '#fff');
+              tooltip.style('opacity', 1).html(`<strong>${d.month}</strong><br/>Revenue: $${d.value.toLocaleString()}<br/>Target: $${(d.target||0).toLocaleString()}`)
+                .style('left', (e.offsetX + 15) + 'px').style('top', (e.offsetY - 40) + 'px');
+            })
+            .on('mouseout', function() {
+              d3.select(this).transition().attr('r', 5).attr('stroke', '#0b1121');
+              tooltip.style('opacity', 0);
+            })
+            .transition().delay((d, i) => i * 80 + 400).duration(300).attr('r', 5);
+        }
+
+        function drawBarChart() {
+          const el = barChart.value;
+          if (!el) return;
+          el.innerHTML = '';
+          const { w, h, m } = getDims(el);
+          const width = w - m.l - m.r;
+          const height = h - m.t - m.b;
+
+          const svg = d3.select(el).append('svg').attr('width', w).attr('height', h);
+          const g = svg.append('g').attr('transform', `translate(${m.l},${m.t})`);
+
+          const x = d3.scaleBand().domain(categoryData.value.map(d => d.name)).range([0, width]).padding(0.35);
+          const y = d3.scaleLinear().domain([0, d3.max(categoryData.value, d => d.value) * 1.1]).range([height, 0]);
+
+          const tooltip = d3.select(el).append('div').attr('class', 'd3-tooltip');
+             g.selectAll('.bar').data(categoryData.value).enter().append('rect')
+            .attr('x', d => x(d.name)).attr('y', height).attr('width', x.bandwidth())
+            .attr('height', 0).attr('fill', d => colorScale(d.name)).attr('rx', 5)
+            .on('mouseover', function(e, d) {
+              d3.select(this).transition().attr('opacity', 0.85);
+              tooltip.style('opacity', 1).html(`<strong>${d.name}</strong><br/>${d.value}% of sales`)
+                .style('left', (e.offsetX + 10) + 'px').style('top', (e.offsetY - 30) + 'px');
+            })
+            .on('mouseout', function() {
+              d3.select(this).transition().attr('opacity', 1);
+              tooltip.style('opacity', 0);
+            })
+            .transition().duration(700).delay((d, i) => i * 80)
+            .attr('y', d => y(d.value)).attr('height', d => height - y(d.value));
+
+          g.append('g').attr('transform', `translate(0,${height})`).call(d3.axisBottom(x).tickSize(0).tickPadding(10))
+            .selectAll('text').attr('fill', '#64748b').style('font-size', '12px');
+          g.append('g').call(d3.axisLeft(y).ticks(5).tickSize(-width))
+            .selectAll('text').attr('fill', '#64748b').style('font-size', '12px');
+          g.selectAll('.domain').attr('stroke', '#23304d');
+          g.selectAll('.tick line').attr('stroke', '#1e293b');
+        }
+
+        function drawPieChart() {
+          const el = pieChart.value;
+          if (!el) return;
+          el.innerHTML = '';
+          const { w, h } = getDims(el);
+          const radius = Math.min(w, h) / 2 - 25;
+
+          const svg = d3.select(el).append('svg').attr('width', w).attr('height', h)
+            .append('g').attr('transform', `translate(${w/2},${h/2})`);
+
+          const pie = d3.pie().value(d => d.value).sort(null).padAngle(0.03);
+          const arc = d3.arc().innerRadius(radius * 0.55).outerRadius(radius);
+          const arcHover = d3.arc().innerRadius(radius * 0.55).outerRadius(radius + 10);
+          const tooltip = d3.select(el).append('div').attr('class', 'd3-tooltip');
+
+          svg.selectAll('path').data(pie(categoryData.value)).enter().append('path')
+            .attr('fill', d => colorScale(d.data.name)).attr('stroke', '#0b1121').attr('stroke-width', 3)
+            .on('mouseover', function(e, d) {
+              d3.select(this).transition().duration(200).attr('d', arcHover);
+              tooltip.style('opacity', 1).html(`<strong>${d.data.name}</strong><br/>${d.data.value}%`)
+                .style('left', (e.offsetX + 10) + 'px').style('top', (e.offsetY - 30) + 'px');
+            })
+            .on('mouseout', function() {
+              d3.select(this).transition().duration(200).attr('d', arc);
+              tooltip.style('opacity', 0);
+            })
+            .transition().duration(900).attrTween('d', function(d) {
+              const i = d3.interpolate(d.startAngle + 0.1, d.endAngle);
+              return t => { d.endAngle = i(t); return arc(d); };
+            });
+
+          svg.append('text').attr('text-anchor', 'middle').attr('dy', '-0.1em')
+            .attr('fill', '#f8fafc').attr('font-size', '26px').attr('font-weight', '800').text('100%');
+          svg.append('text').attr('text-anchor', 'middle').attr('dy', '1.3em')
+            .attr('fill', '#64748b').attr('font-size', '12px').text('Total Share');
+        }
+
+        function drawAreaChart() {
+          const el = areaChart.value;
+          if (!el) return;
+          el.innerHTML = '';
+          const { w, h, m } = getDims(el);
+          const width = w - m.l - m.r;
+          const height = h - m.t - m.b;
+
+          const svg = d3.select(el).append('svg').attr('width', w).attr('height', h);
+          const g = svg.append('g').attr('transform', `translate(${m.l},${m.t})`);
+
+          const keys = ['value', 'target'];
+          const stacked = d3.stack().keys(keys)(revenueData.value);
+          const x = d3.scalePoint().domain(revenueData.value.map(d => d.month)).range([0, width]).padding(0.3);
+          const y = d3.scaleLinear().domain([0, d3.max(stacked, layer => d3.max(layer, d => d[1])) * 1.1]).range([height, 0]);
+
+          const colors = { value: 'rgba(99,102,241,0.5)', target: 'rgba(16,185,129,0.3)' };
+
+          const area = d3.area().x(d => x(d.data.month)).y0(d => y(d[0])).y1(d => y(d[1])).curve(d3.curveMonotoneX);
+
+          g.selectAll('.layer').data(stacked).enter().append('path')
+            .attr('fill', d => colors[d.key]).attr('d', area)
+            .attr('opacity', 0)
+            .transition().duration(1000).delay((d, i) => i * 200).attr('opacity', 1);
+
+          g.append('g').attr('transform', `translate(0,${height})`).call(d3.axisBottom(x).tickSize(0).tickPadding(10))
+            .selectAll('text').attr('fill', '#64748b').style('font-size', '12px');
+          g.append('g').call(d3.axisLeft(y).ticks(5).tickFormat(d => '$' + (d/1000).toFixed(1) + 'k').tickSize(-width))
+            .selectAll('text').attr('fill', '#64748b').style('font-size', '12px');
+          g.selectAll('.domain').attr('stroke', '#23304d');
+          g.selectAll('.tick line').attr('stroke', '#1e293b');
+
+          // Legend inside chart
+          const legend = g.append('g').attr('transform', `translate(${width - 100}, 20)`);
+          ['value', 'target'].forEach((key, i) => {
+            const row = legend.append('g').attr('transform', `translate(0, ${i * 20})`);
+            row.append('rect').attr('width', 10).attr('height', 10).attr('rx', 2).attr('fill', colors[key]);
+            row.append('text').attr('x', 16).attr('y', 9).text(key === 'value' ? 'Actual' : 'Target').attr('fill', '#94a3b8').style('font-size', '12px');
+          });
+        }
+
+        function drawAllCharts() {
+          nextTick(() => {
+            drawLineChart();
+            drawBarChart();
+            drawPieChart();
+            drawAreaChart();
+          });
+        }
+
+        // ========================
+        // INTERACTIONS
+        // ========================
+        const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+
+        function addDataPoint() {
+          const nextIdx = revenueData.value.length;
+          const month = months[nextIdx % 12] + "'" + (26 + Math.floor(nextIdx / 12));
+          const last = revenueData.value[revenueData.value.length - 1]?.value || 5000;
+          const val = Math.max(2000, Math.round(last + (Math.random() * 3000 - 1000)));
+          const tgt = Math.round(val * (0.8 + Math.random() * 0.3));
+
+          revenueData.value.push({ month, value: val, target: tgt });
+          if (revenueData.value.length > 12) revenueData.value.shift();
+
+          // Randomly bump a category
+          const catIdx = Math.floor(Math.random() * categoryData.value.length);
+          categoryData.value[catIdx].value = Math.min(50, categoryData.value[catIdx].value + Math.floor(Math.random() * 5));
+          // Normalize categories back to ~100
+          const sum = categoryData.value.reduce((s, d) => s + d.value, 0);
+          categoryData.value.forEach(d => d.value = Math.round((d.value / sum) * 100));
+
+          addActivity('payment', `Revenue updated: ${month} → $${val.toLocaleString()}`);
+          drawAllCharts();
+          syncToFirebase();
+        }
+
+        function randomizeData() {
+          revenueData.value = revenueData.value.map(d => ({
+            ...d,
+            value: Math.floor(Math.random() * 8000) + 2000,
+            target: Math.floor(Math.random() * 7000) + 2000
+          }));
+          categoryData.value = categoryData.value.map(d => ({
+            ...d,
+            value: Math.floor(Math.random() * 35) + 5
+          }));
+          const sum = categoryData.value.reduce((s, d) => s + d.value, 0);
+          categoryData.value.forEach(d => d.value = Math.round((d.value / sum) * 100));
+         addActivity('order', 'Dataset randomized by user');
+          drawAllCharts();
+          syncToFirebase();
+        }
+
+        function clearData() {
+          revenueData.value = [];
+          activities.value = [];
+          drawAllCharts();
+          syncToFirebase();
+        }
+
+        // ========================
+        // LIFECYCLE
+        // ========================
+        onMounted(() => {
+          drawAllCharts();
+          window.addEventListener('resize', drawAllCharts);
+
+          // Simulate occasional online flicker if not connected to real Firebase
+          if (!firebaseConnected.value) {
+            isOnline.value = true;
+            setInterval(() => {
+              if (!firebaseConnected.value) isOnline.value = Math.random() > 0.05;
+            }, 4000);
+          }
+        });
+
+        return {
+          lineChart, barChart, pieChart, areaChart,
+          metrics, activities, isOnline, firebaseConnected, firebaseConfig,
+          colorScale, addDataPoint, randomizeData, clearData, connectFirebase
+        };
+      }
+    }).mount('#app');
+  </script>
+</body>
+</html>
